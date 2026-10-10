@@ -47,6 +47,7 @@ MIN_FIT_PIXELS = 60            # sub atatia pixeli nu avem incredere in linie
 # --- Eroarea laterala si verificarea de plauzibilitate ---
 LANE_WIDTH = 3.5               # latimea asteptata a benzii (m)
 LANE_WIDTH_TOLERANCE = 0.7     # cu cat se poate abate latimea masurata ca sa credem detectia (m)
+MAX_FIT_RESIDUAL = 4.0         # abaterea maxima a pixelilor fata de curbele potrivite (pixeli)
 
 
 def threshold_lane_pixels(rgb):
@@ -173,13 +174,62 @@ def track_line(bev_mask, base_x):
 
 
 def fit_line(xs, ys):
-    """Potriveste x = a*y^2 + b*y + c prin pixelii unei linii. Intoarce [a, b, c] sau None."""
-    if len(xs) < MIN_FIT_PIXELS:
-        return None
+    """Potriveste x = a*y^2 + b*y + c prin pixelii unei singure linii. Intoarce [a, b, c]."""
     # Cu pixeli doar dintr-o zona scurta (o singura liniuta) o parabola ar fi nesigura: dreapta
     if ys.max() - ys.min() > BEV_HEIGHT / 2:
         return np.polyfit(ys, xs, 2)
     return np.concatenate([[0.0], np.polyfit(ys, xs, 1)])
+
+
+def fit_parallel_lines(left_pixels, right_pixels):
+    """Potriveste ambele linii deodata. Fiind paralele, au aceeasi forma (a si b comune)
+    si difera doar prin pozitie (c_left, c_right): x = a*y^2 + b*y + c.
+    Intoarce (left_fit, right_fit, residual), unde residual este abaterea medie patratica
+    a pixelilor fata de curbe, in pixeli."""
+    (left_xs, left_ys), (right_xs, right_ys) = left_pixels, right_pixels
+    xs = np.concatenate([left_xs, right_xs]).astype(float)
+    ys = np.concatenate([left_ys, right_ys]).astype(float)
+    is_left = np.concatenate([np.ones(len(left_xs)), np.zeros(len(right_xs))])
+
+    # Fiecare pixel da o ecuatie: a*y^2 + b*y + c_left*[e pe stanga] + c_right*[e pe dreapta] = x
+    columns = [ys, is_left, 1 - is_left]
+    # Cu pixeli doar dintr-o zona scurta o parabola ar fi nesigura: atunci potrivim drepte
+    use_parabola = ys.max() - ys.min() > BEV_HEIGHT / 2
+    if use_parabola:
+        columns.insert(0, ys ** 2)
+    equations = np.column_stack(columns)
+
+    # Cele mai mici patrate: coeficientii care fac suma abaterilor patratice minima
+    coefficients = np.linalg.lstsq(equations, xs, rcond=None)[0]
+    residual = np.sqrt(np.mean((equations @ coefficients - xs) ** 2))
+
+    if not use_parabola:
+        coefficients = np.concatenate([[0.0], coefficients])
+    a, b, c_left, c_right = coefficients
+    return np.array([a, b, c_left]), np.array([a, b, c_right]), residual
+
+
+def fit_lane(left_pixels, right_pixels):
+    """Din pixelii celor doua linii (fiecare (xs, ys) sau None) scoate curbele benzii.
+    Intoarce (left_fit, right_fit, rejected): rejected e True daca am gasit ambele linii,
+    dar rezultatul nu arata ca o banda si l-am respins."""
+    if left_pixels is not None and right_pixels is not None:
+        left_fit, right_fit, residual = fit_parallel_lines(left_pixels, right_pixels)
+        if lane_is_plausible(left_fit, right_fit, residual):
+            return left_fit, right_fit, False
+        return None, None, True  # mai bine "nu stiu" decat o banda care nu poate exista
+    if left_pixels is not None:
+        return fit_line(*left_pixels), None, False
+    if right_pixels is not None:
+        return None, fit_line(*right_pixels), False
+    return None, None, False
+
+
+def lane_is_plausible(left_fit, right_fit, residual):
+    """Verifica daca cele doua linii arata ca o banda: distanta dintre ele seamana cu
+    latimea unei benzi, iar pixelii chiar stau pe doua curbe paralele."""
+    width = (right_fit[2] - left_fit[2]) * XM_PER_PIX
+    return abs(width - LANE_WIDTH) <= LANE_WIDTH_TOLERANCE and residual <= MAX_FIT_RESIDUAL
 
 
 def find_lane_lines(bev_mask):
@@ -187,42 +237,30 @@ def find_lane_lines(bev_mask):
     Intoarce (left_fit, right_fit, debug): coeficientii [a, b, c] ai fiecarei linii
     (None daca linia nu a fost gasita) si o imagine color cu ce a facut algoritmul."""
     debug = cv2.cvtColor(bev_mask, cv2.COLOR_GRAY2BGR)
-    fits = []
+    pixels = []
     colors = [(0, 0, 255), (255, 0, 0)]  # stanga rosu, dreapta albastru (BGR)
 
     for base_x, color in zip(find_line_bases(bev_mask), colors):
         if base_x is None:
-            fits.append(None)
+            pixels.append(None)
             continue
         xs, ys, windows = track_line(bev_mask, base_x)
-        fit = fit_line(xs, ys)
-        fits.append(fit)
+        pixels.append((xs, ys) if len(xs) >= MIN_FIT_PIXELS else None)
 
         debug[ys, xs] = color
         for x_low, y_low, x_high, y_high in windows:
             cv2.rectangle(debug, (x_low, y_low), (x_high, y_high), (0, 255, 0), 1)
+
+    left_fit, right_fit, rejected = fit_lane(pixels[0], pixels[1])
+
+    plot_y = np.arange(BEV_HEIGHT)
+    for fit in (left_fit, right_fit):
         if fit is not None:
-            plot_y = np.arange(BEV_HEIGHT)
-            plot_x = np.polyval(fit, plot_y)
-            points = np.int32(np.column_stack([plot_x, plot_y]))
+            points = np.int32(np.column_stack([np.polyval(fit, plot_y), plot_y]))
             cv2.polylines(debug, [points], False, (0, 255, 255), 2)
-
-    left_fit, right_fit = fits
-    if left_fit is not None and right_fit is not None and not lane_width_is_plausible(left_fit, right_fit):
-        # Mai bine "nu stiu" decat o banda care nu poate exista
-        cv2.putText(debug, "respins: latime", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-        left_fit = right_fit = None
+    if rejected:
+        cv2.putText(debug, "respins", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
     return left_fit, right_fit, debug
-
-
-def lane_width_is_plausible(left_fit, right_fit):
-    """Verifica daca distanta dintre cele doua linii seamana cu latimea unei benzi:
-    langa masina, la jumatatea zonei privite si la capatul ei indepartat."""
-    for y in (BEV_HEIGHT - 1, BEV_HEIGHT // 2, 0):
-        width = (np.polyval(right_fit, y) - np.polyval(left_fit, y)) * XM_PER_PIX
-        if abs(width - LANE_WIDTH) > LANE_WIDTH_TOLERANCE:
-            return False
-    return True
 
 
 def detect_lane(rgb):
@@ -249,6 +287,24 @@ def lateral_offset(left_fit, right_fit):
 
     car_x = BEV_WIDTH / 2  # camera e pe axa masinii, deci masina e la mijlocul imaginii
     return (car_x - lane_center) * XM_PER_PIX
+
+
+def heading_error(left_fit, right_fit):
+    """Unghiul dintre directia benzii si directia masinii, in radiani, masurat in acelasi
+    loc ca eroarea laterala. Pozitiv = banda o ia la dreapta fata de masina.
+    None daca nu vedem nicio linie."""
+    fits = [fit for fit in (left_fit, right_fit) if fit is not None]
+    if not fits:
+        return None
+
+    y = BEV_HEIGHT - 1
+    # Panta unei linii in pixeli: derivata lui x = a*y^2 + b*y + c, adica 2*a*y + b
+    slopes_px = [2 * fit[0] * y + fit[1] for fit in fits]
+    slope_px = sum(slopes_px) / len(slopes_px)  # media celor doua linii
+    # In metri: un pixel lateral = XM_PER_PIX, un pixel inainte = YM_PER_PIX.
+    # Minusul apare pentru ca "inainte" inseamna randuri tot mai mici in imagine.
+    slope_m = -slope_px * XM_PER_PIX / YM_PER_PIX
+    return math.atan(slope_m)
 
 
 def draw_lane_overlay(rgb, left_fit, right_fit):
