@@ -6,6 +6,8 @@ Etapa 2: transformarea de perspectiva - "indreptam" imaginea ca si cum am
          privi drumul de sus (bird's-eye view, prescurtat BEV).
 Etapa 3: sliding window - gasim pixelii celor doua linii ale benzii noastre
          si potrivim cate o curba prin ei.
+Etapa 4: eroarea laterala in metri si verificarea de plauzibilitate, ca detectia
+         sa spuna "nu stiu" in loc sa raporteze valori absurde.
 
 Demo pe imagini salvate (o tasta trece la urmatoarea, ESC iese):
     venv\\Scripts\\python.exe lane_detection.py data\\frames\\frame_0060.png
@@ -17,7 +19,7 @@ import sys
 import cv2
 import numpy as np
 
-from camera_view import CAMERA_FOV, CAMERA_TRANSFORM, IMAGE_HEIGHT, IMAGE_WIDTH
+from simulation import CAMERA_FOV, CAMERA_TRANSFORM, IMAGE_HEIGHT, IMAGE_WIDTH
 
 # --- Etapa 1: filtrarea ---
 ROI_TOP = 330                  # randul de la care incepe drumul; mai sus e cer si peisaj
@@ -41,6 +43,10 @@ N_WINDOWS = 10                 # cate ferestre suprapunem pe inaltimea imaginii
 WINDOW_MARGIN = 40             # jumatate din latimea unei ferestre, in pixeli (1 m)
 MIN_PIXELS = 15                # cati pixeli trebuie sa prinda o fereastra ca sa se recentreze
 MIN_FIT_PIXELS = 60            # sub atatia pixeli nu avem incredere in linie
+
+# --- Eroarea laterala si verificarea de plauzibilitate ---
+LANE_WIDTH = 3.5               # latimea asteptata a benzii (m)
+LANE_WIDTH_TOLERANCE = 0.7     # cu cat se poate abate latimea masurata ca sa credem detectia (m)
 
 
 def threshold_lane_pixels(rgb):
@@ -89,6 +95,7 @@ def build_bev_matrix():
 
 
 BEV_MATRIX = build_bev_matrix()  # camera e fixa pe masina, deci o calculam o singura data
+BEV_MATRIX_INV = np.linalg.inv(BEV_MATRIX)  # drumul invers: din vederea de sus in imaginea camerei
 
 
 def warp_to_bev(image):
@@ -200,7 +207,65 @@ def find_lane_lines(bev_mask):
             points = np.int32(np.column_stack([plot_x, plot_y]))
             cv2.polylines(debug, [points], False, (0, 255, 255), 2)
 
-    return fits[0], fits[1], debug
+    left_fit, right_fit = fits
+    if left_fit is not None and right_fit is not None and not lane_width_is_plausible(left_fit, right_fit):
+        # Mai bine "nu stiu" decat o banda care nu poate exista
+        cv2.putText(debug, "respins: latime", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        left_fit = right_fit = None
+    return left_fit, right_fit, debug
+
+
+def lane_width_is_plausible(left_fit, right_fit):
+    """Verifica daca distanta dintre cele doua linii seamana cu latimea unei benzi:
+    langa masina, la jumatatea zonei privite si la capatul ei indepartat."""
+    for y in (BEV_HEIGHT - 1, BEV_HEIGHT // 2, 0):
+        width = (np.polyval(right_fit, y) - np.polyval(left_fit, y)) * XM_PER_PIX
+        if abs(width - LANE_WIDTH) > LANE_WIDTH_TOLERANCE:
+            return False
+    return True
+
+
+def detect_lane(rgb):
+    """Tot lantul, de la imaginea camerei la liniile benzii: filtrare, vedere de sus, sliding window.
+    Intoarce (left_fit, right_fit, debug), ca find_lane_lines."""
+    mask = threshold_lane_pixels(rgb)
+    return find_lane_lines(warp_to_bev(mask))
+
+
+def lateral_offset(left_fit, right_fit):
+    """Cat de departe e masina de centrul benzii, in metri, masurat la BEV_X_NEAR metri
+    in fata camerei. Pozitiv = masina e la dreapta centrului. None daca nu vedem nicio linie."""
+    y = BEV_HEIGHT - 1  # randul de jos al vederii de sus, cel mai apropiat de masina
+    half_lane = LANE_WIDTH / 2 / XM_PER_PIX  # jumatate de banda, in pixeli
+
+    if left_fit is not None and right_fit is not None:
+        lane_center = (np.polyval(left_fit, y) + np.polyval(right_fit, y)) / 2
+    elif left_fit is not None:
+        lane_center = np.polyval(left_fit, y) + half_lane
+    elif right_fit is not None:
+        lane_center = np.polyval(right_fit, y) - half_lane
+    else:
+        return None
+
+    car_x = BEV_WIDTH / 2  # camera e pe axa masinii, deci masina e la mijlocul imaginii
+    return (car_x - lane_center) * XM_PER_PIX
+
+
+def draw_lane_overlay(rgb, left_fit, right_fit):
+    """Intoarce imaginea camerei cu banda detectata colorata in verde."""
+    if left_fit is None or right_fit is None:
+        return rgb.copy()
+
+    # Desenam banda in vederea de sus, ca poligon intre cele doua curbe...
+    ys = np.arange(BEV_HEIGHT)
+    left_points = np.column_stack([np.polyval(left_fit, ys), ys])
+    right_points = np.column_stack([np.polyval(right_fit, ys), ys])[::-1]
+    lane = np.zeros((BEV_HEIGHT, BEV_WIDTH, 3), dtype=np.uint8)
+    cv2.fillPoly(lane, [np.int32(np.vstack([left_points, right_points]))], (0, 255, 0))
+
+    # ...apoi o ducem inapoi in perspectiva camerei si o suprapunem semitransparent
+    lane_in_camera = cv2.warpPerspective(lane, BEV_MATRIX_INV, (IMAGE_WIDTH, IMAGE_HEIGHT))
+    return cv2.addWeighted(rgb, 1.0, lane_in_camera, 0.3, 0)
 
 
 def main():
