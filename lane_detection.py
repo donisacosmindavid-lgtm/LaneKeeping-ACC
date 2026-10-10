@@ -337,6 +337,20 @@ def heading_error(left_fit, right_fit):
     return math.atan(slope_m)
 
 
+def lane_curvature(left_fit, right_fit):
+    """Curbura benzii in 1/m (inversul razei curbei), pozitiva = curba la dreapta.
+    None daca nu vedem nicio linie."""
+    fits = [fit for fit in (left_fit, right_fit) if fit is not None]
+    if not fits:
+        return None
+
+    a = sum(fit[0] for fit in fits) / len(fits)
+    # Curbura este a doua derivata a liniei: pentru x = a*y^2 + b*y + c, ea este 2*a (in pixeli).
+    # In metri: lateral inmultim cu XM_PER_PIX, iar inainte impartim de doua ori la YM_PER_PIX.
+    # (Aproximare buna cat timp linia nu e foarte inclinata fata de directia masinii.)
+    return 2 * a * XM_PER_PIX / YM_PER_PIX ** 2
+
+
 def draw_lane_overlay(rgb, left_fit, right_fit):
     """Intoarce imaginea camerei cu banda detectata colorata in verde."""
     if left_fit is None or right_fit is None:
