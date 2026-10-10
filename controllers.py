@@ -4,24 +4,31 @@ import math
 
 
 class StanleyController:
-    """Regulator lateral Stanley: unghi de volan = eroare de orientare + arctan(k * e / v).
+    """Regulator lateral Stanley, cu compensarea curburii drumului:
+    unghi de volan = eroare de orientare + arctan(k * e / v) + arctan(L * curbura).
 
     - eroarea de orientare aliniaza masina cu banda (rolul partii derivative);
     - arctan(k * e / v) o trage spre centrul benzii (partea proportionala), cu un
-      castig care scade singur cand viteza creste.
+      castig care scade singur cand viteza creste;
+    - arctan(L * curbura) este unghiul de care are nevoie curba insasi (feed-forward):
+      curbura e o perturbatie pe care o masuram, deci o compensam direct.
     """
 
-    def __init__(self, gain, softening=1.0):
+    def __init__(self, gain, wheelbase, softening=1.0):
         self.gain = gain            # k: cat de energic corecteaza eroarea laterala (1/s)
+        self.wheelbase = wheelbase  # L: ampatamentul masinii (m)
         self.softening = softening  # m/s adaugati la viteza, ca sa nu impartim la ~0 la pornire
 
-    def compute(self, lateral_offset, heading_error, speed):
+    def compute(self, lateral_offset, heading_error, speed, curvature=0.0):
         """lateral_offset: m, pozitiv = masina e la dreapta centrului benzii.
         heading_error: rad, pozitiv = banda o ia la dreapta fata de masina.
-        speed: m/s. Intoarce unghiul dorit al rotilor in rad, pozitiv = spre dreapta."""
+        speed: m/s. curvature: 1/m, pozitiva = curba la dreapta.
+        Intoarce unghiul dorit al rotilor in rad, pozitiv = spre dreapta."""
         # Minus: daca masina e la dreapta centrului, trebuie sa viram la stanga
         cross_track_term = math.atan2(-self.gain * lateral_offset, speed + self.softening)
-        return heading_error + cross_track_term
+        # O masina cu ampatamentul L merge pe un cerc de raza R cu rotile virate la arctan(L / R)
+        feed_forward = math.atan(self.wheelbase * curvature)
+        return heading_error + cross_track_term + feed_forward
 
 
 class SpeedController:

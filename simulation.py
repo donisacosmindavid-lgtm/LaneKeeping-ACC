@@ -22,6 +22,9 @@ IMAGE_HEIGHT = 600
 CAMERA_FOV = 90           # unghiul de vedere orizontal, in grade
 # Pozitia camerei fata de centrul masinii: x = in fata, z = in sus (metri)
 CAMERA_TRANSFORM = carla.Transform(carla.Location(x=1.5, z=2.4))
+# Geometria masinii (Tesla Model 3), citita din simulator
+WHEELBASE = 3.0           # ampatamentul: distanta dintre puntea fata si puntea spate (m)
+REAR_AXLE_OFFSET = 1.39   # cat de in spatele centrului masinii este puntea spate (m)
 
 
 def image_to_rgb(image):
@@ -72,8 +75,12 @@ class Simulation:
         spawn_point = self.world.get_map().get_spawn_points()[SPAWN_INDEX]
         self.vehicle = self.world.spawn_actor(vehicle_bp, spawn_point)
         self._actors.append(self.vehicle)
-        front_wheel = self.vehicle.get_physics_control().wheels[0]
-        self.max_steer_angle = math.radians(front_wheel.max_steer_angle)
+        physics = self.vehicle.get_physics_control()
+        self.max_steer_angle = math.radians(physics.wheels[0].max_steer_angle)
+        # CARLA micsoreaza singura directia cand viteza creste, dupa aceasta curba
+        # (viteza in km/h -> fractiune din unghiul cerut); o tinem minte ca s-o compensam
+        self._steer_curve_speeds = [point.x for point in physics.steering_curve]
+        self._steer_curve_factors = [point.y for point in physics.steering_curve]
         if autopilot:
             self.vehicle.set_autopilot(True, TM_PORT)
             # Pilotul automat ramane pe banda lui, ca sa avem un test curat pentru detectie
@@ -105,8 +112,12 @@ class Simulation:
     def apply_control(self, steer_angle, throttle, brake):
         """Trimite comenzile catre masina; se aplica la urmatorul tick().
         steer_angle: unghiul dorit al rotilor in rad (pozitiv = dreapta); throttle, brake: 0..1."""
-        # CARLA vrea directia intre -1 si 1, ca fractiune din unghiul maxim al rotilor
-        steer = max(-1.0, min(1.0, steer_angle / self.max_steer_angle))
+        # CARLA vrea directia intre -1 si 1, ca fractiune din unghiul maxim al rotilor,
+        # pe care apoi o reduce in functie de viteza; impartim la acel factor, ca rotile
+        # sa ajunga exact la unghiul cerut
+        speed_factor = np.interp(self.speed() * 3.6, self._steer_curve_speeds, self._steer_curve_factors)
+        steer = steer_angle / (self.max_steer_angle * speed_factor)
+        steer = max(-1.0, min(1.0, steer))
         self.vehicle.apply_control(carla.VehicleControl(throttle=throttle, steer=steer, brake=brake))
 
     def close(self):

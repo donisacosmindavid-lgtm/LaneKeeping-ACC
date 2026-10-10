@@ -16,10 +16,11 @@ import cv2
 
 from controllers import SpeedController, StanleyController
 from display import Window
-from lane_detection import (BEV_HEIGHT, BEV_WIDTH, LaneDetector, heading_error, lane_curvature,
-                            lateral_offset)
+from lane_detection import (BEV_HEIGHT, BEV_WIDTH, BEV_X_NEAR, LaneDetector, heading_error,
+                            lane_curvature, lateral_offset)
 from lane_view import compose_view
-from simulation import FIXED_DELTA, IMAGE_HEIGHT, IMAGE_WIDTH, Simulation
+from simulation import (CAMERA_TRANSFORM, FIXED_DELTA, IMAGE_HEIGHT, IMAGE_WIDTH, REAR_AXLE_OFFSET,
+                        WHEELBASE, Simulation)
 
 CRUISE_SPEED = 50 / 3.6       # viteza de croaziera, pe drum drept (m/s)
 STANLEY_GAIN = 3.0            # k din formula Stanley
@@ -29,6 +30,9 @@ MAX_LATERAL_ACCEL = 2.0       # acceleratia laterala maxima acceptata in curbe (
 CURVATURE_RISE_TIME = 0.3     # constanta de timp a filtrului de curbura cand curbura creste (s)
 CURVATURE_FALL_TIME = 3.0     # ...si cand scade (s)
 MAX_BLIND_FRAMES = 10         # dupa atatea cadre la rand fara detectie, masina franeaza (0.5 s)
+CURVATURE_LAG_TIME = 1.5      # intarzierea curburii folosite la corectia directiei (s)
+# Distanta de la puntea spate la punctul in care detectia masoara erorile (m)
+LOOKAHEAD = REAR_AXLE_OFFSET + CAMERA_TRANSFORM.location.x + BEV_X_NEAR
 
 
 class LaneKeeper:
@@ -37,10 +41,11 @@ class LaneKeeper:
     def __init__(self, sim):
         self.sim = sim
         self.detector = LaneDetector()
-        self.stanley = StanleyController(STANLEY_GAIN)
+        self.stanley = StanleyController(STANLEY_GAIN, WHEELBASE)
         self.speed_controller = SpeedController(SPEED_KP, SPEED_KI, FIXED_DELTA)
         self.steer_angle = 0.0             # ultima comanda de directie (rad)
-        self.curvature = 0.0               # curbura benzii, filtrata (1/m)
+        self.curvature = 0.0               # curbura benzii din fata, filtrata; alege viteza (1/m)
+        self.curvature_here = 0.0          # curbura estimata sub masina; corecteaza directia (1/m)
         self.target_speed = CRUISE_SPEED   # viteza ceruta in acest pas (m/s)
         self.frames_without_detection = 0
 
@@ -54,8 +59,10 @@ class LaneKeeper:
 
         if offset is not None:
             self.frames_without_detection = 0
-            self.steer_angle = self.stanley.compute(offset, heading, speed)
             self.update_curvature(lane_curvature(left_fit, right_fit))
+            offset_here, heading_here = self.remove_curve_bias(offset, heading)
+            self.steer_angle = self.stanley.compute(offset_here, heading_here, speed,
+                                                    self.curvature_here)
         else:
             # Fara detectie pastram ultima comanda de directie si numaram cadrele
             self.frames_without_detection += 1
@@ -73,6 +80,20 @@ class LaneKeeper:
         time_constant = CURVATURE_RISE_TIME if rising else CURVATURE_FALL_TIME
         alpha = FIXED_DELTA / (time_constant + FIXED_DELTA)
         self.curvature += alpha * (measured - self.curvature)
+
+        # Aceeasi masuratoare, intarziata: curbura vazuta acum in fata ajunge sub masina
+        # abia dupa ce parcurgem distanta pana acolo
+        alpha = FIXED_DELTA / (CURVATURE_LAG_TIME + FIXED_DELTA)
+        self.curvature_here += alpha * (measured - self.curvature_here)
+
+    def remove_curve_bias(self, offset, heading):
+        """Scoate din masuratori partea care se datoreaza doar curbei.
+        Intr-o curba, chiar si o masina perfect centrata vede, la LOOKAHEAD metri in fata,
+        banda rotita cu curbura * LOOKAHEAD si deplasata lateral. Scazand aceste valori,
+        erorile raman zero cand masina e pe centrul benzii."""
+        heading_here = heading - self.curvature_here * LOOKAHEAD
+        offset_here = offset + self.curvature_here * (LOOKAHEAD ** 2 - REAR_AXLE_OFFSET ** 2) / 2
+        return offset_here, heading_here
 
     def choose_target_speed(self):
         """Viteza ceruta: de croaziera, redusa in curbe, zero daca nu mai vedem banda."""
