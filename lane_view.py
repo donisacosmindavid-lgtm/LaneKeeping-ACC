@@ -12,7 +12,7 @@ import cv2
 import numpy as np
 
 from display import Window
-from lane_detection import BEV_HEIGHT, BEV_WIDTH, detect_lane, draw_lane_overlay, lateral_offset
+from lane_detection import BEV_HEIGHT, BEV_WIDTH, LaneDetector, draw_lane_overlay, lateral_offset
 from simulation import FIXED_DELTA, IMAGE_HEIGHT, IMAGE_WIDTH, Simulation
 
 
@@ -33,12 +33,13 @@ def compose_view(rgb, left_fit, right_fit, debug):
 def main():
     window = Window(IMAGE_WIDTH + BEV_WIDTH, IMAGE_HEIGHT, "ADAS - detectia benzilor",
                     fps=1.0 / FIXED_DELTA)
+    detector = LaneDetector()
     try:
         with Simulation() as sim:
             running = True
             while running:
                 rgb = sim.tick()
-                left_fit, right_fit, debug = detect_lane(rgb)
+                left_fit, right_fit, debug = detector.update(rgb)
                 running = window.show(compose_view(rgb, left_fit, right_fit, debug))
     finally:
         window.close()

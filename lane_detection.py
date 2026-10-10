@@ -8,6 +8,8 @@ Etapa 3: sliding window - gasim pixelii celor doua linii ale benzii noastre
          si potrivim cate o curba prin ei.
 Etapa 4: eroarea laterala in metri si verificarea de plauzibilitate, ca detectia
          sa spuna "nu stiu" in loc sa raporteze valori absurde.
+Etapa 5: urmarire intre cadre (clasa LaneDetector), ca ferestrele sa nu piarda
+         liniile in curbe stranse.
 
 Demo pe imagini salvate (o tasta trece la urmatoarea, ESC iese):
     venv\\Scripts\\python.exe lane_detection.py data\\frames\\frame_0060.png
@@ -147,8 +149,10 @@ def _first_peak(histogram, columns):
     return best
 
 
-def track_line(bev_mask, base_x):
-    """Urmareste o linie de jos in sus cu ferestre glisante, pornind de la coloana base_x.
+def track_line(bev_mask, base_x=None, prior_fit=None):
+    """Aduna pixelii unei linii cu ferestre glisante, de jos in sus.
+    - cu base_x: porneste de la acea coloana si fiecare fereastra se recentreaza pe ce gaseste;
+    - cu prior_fit: ferestrele urmeaza curba [a, b, c] gasita la cadrul anterior.
     Intoarce coordonatele pixelilor liniei (xs, ys) si ferestrele folosite (pentru desen)."""
     ys, xs = bev_mask.nonzero()  # coordonatele tuturor pixelilor albi
     window_height = BEV_HEIGHT // N_WINDOWS
@@ -159,14 +163,17 @@ def track_line(bev_mask, base_x):
     for i in range(N_WINDOWS):
         y_high = BEV_HEIGHT - i * window_height  # fereastra 0 e cea de jos, langa masina
         y_low = y_high - window_height
+        if prior_fit is not None:
+            # Linia nu sare de la un cadru la altul: o cautam unde era acum 0.05 s
+            current_x = int(np.polyval(prior_fit, (y_low + y_high) / 2))
         x_low = current_x - WINDOW_MARGIN
         x_high = current_x + WINDOW_MARGIN
         windows.append((x_low, y_low, x_high, y_high))
 
         inside = ((ys >= y_low) & (ys < y_high) & (xs >= x_low) & (xs < x_high)).nonzero()[0]
         selected.append(inside)
-        # Daca am prins destui pixeli, urmatoarea fereastra se centreaza pe media lor
-        if len(inside) >= MIN_PIXELS:
+        # Fara curba anterioara: daca am prins destui pixeli, ne recentram pe media lor
+        if prior_fit is None and len(inside) >= MIN_PIXELS:
             current_x = int(xs[inside].mean())
 
     selected = np.concatenate(selected)
@@ -232,19 +239,26 @@ def lane_is_plausible(left_fit, right_fit, residual):
     return abs(width - LANE_WIDTH) <= LANE_WIDTH_TOLERANCE and residual <= MAX_FIT_RESIDUAL
 
 
-def find_lane_lines(bev_mask):
+def find_lane_lines(bev_mask, prior=(None, None)):
     """Detecteaza cele doua linii ale benzii noastre in masca vazuta de sus.
+    prior: curbele (stanga, dreapta) de la cadrul anterior, daca le avem; fara ele,
+    punctul de start al fiecarei linii se cauta in histograma.
     Intoarce (left_fit, right_fit, debug): coeficientii [a, b, c] ai fiecarei linii
     (None daca linia nu a fost gasita) si o imagine color cu ce a facut algoritmul."""
     debug = cv2.cvtColor(bev_mask, cv2.COLOR_GRAY2BGR)
     pixels = []
     colors = [(0, 0, 255), (255, 0, 0)]  # stanga rosu, dreapta albastru (BGR)
 
-    for base_x, color in zip(find_line_bases(bev_mask), colors):
-        if base_x is None:
+    need_bases = any(fit is None for fit in prior)
+    bases = find_line_bases(bev_mask) if need_bases else (None, None)
+    for base_x, prior_fit, color in zip(bases, prior, colors):
+        if prior_fit is not None:
+            xs, ys, windows = track_line(bev_mask, prior_fit=prior_fit)
+        elif base_x is not None:
+            xs, ys, windows = track_line(bev_mask, base_x=base_x)
+        else:
             pixels.append(None)
             continue
-        xs, ys, windows = track_line(bev_mask, base_x)
         pixels.append((xs, ys) if len(xs) >= MIN_FIT_PIXELS else None)
 
         debug[ys, xs] = color
@@ -268,6 +282,22 @@ def detect_lane(rgb):
     Intoarce (left_fit, right_fit, debug), ca find_lane_lines."""
     mask = threshold_lane_pixels(rgb)
     return find_lane_lines(warp_to_bev(mask))
+
+
+class LaneDetector:
+    """Detectia benzii cu urmarire intre cadre: ferestrele pornesc de la curbele gasite
+    la cadrul anterior, deci nu pierd linia in golurile dintre liniute, nici in curbe."""
+
+    def __init__(self):
+        self._prior = (None, None)  # curbele (stanga, dreapta) de la cadrul anterior
+
+    def update(self, rgb):
+        """Primeste imaginea camerei si intoarce (left_fit, right_fit, debug)."""
+        bev_mask = warp_to_bev(threshold_lane_pixels(rgb))
+        left_fit, right_fit, debug = find_lane_lines(bev_mask, self._prior)
+        # Daca detectia a esuat sau a fost respinsa, la cadrul urmator o luam de la zero
+        self._prior = (left_fit, right_fit)
+        return left_fit, right_fit, debug
 
 
 def lateral_offset(left_fit, right_fit):

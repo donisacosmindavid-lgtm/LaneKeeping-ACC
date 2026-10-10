@@ -15,7 +15,7 @@ import cv2
 
 from controllers import SpeedController, StanleyController
 from display import Window
-from lane_detection import BEV_HEIGHT, BEV_WIDTH, detect_lane, heading_error, lateral_offset
+from lane_detection import BEV_HEIGHT, BEV_WIDTH, LaneDetector, heading_error, lateral_offset
 from lane_view import compose_view
 from simulation import FIXED_DELTA, IMAGE_HEIGHT, IMAGE_WIDTH, Simulation
 
@@ -30,6 +30,7 @@ class LaneKeeper:
 
     def __init__(self, sim):
         self.sim = sim
+        self.detector = LaneDetector()
         self.stanley = StanleyController(STANLEY_GAIN)
         self.speed_controller = SpeedController(SPEED_KP, SPEED_KI, FIXED_DELTA)
         self.steer_angle = 0.0  # ultima comanda de directie (rad)
@@ -37,7 +38,7 @@ class LaneKeeper:
     def step(self, rgb):
         """Calculeaza si trimite comenzile pentru imaginea curenta.
         Intoarce (left_fit, right_fit, debug, offset, heading) pentru afisare."""
-        left_fit, right_fit, debug = detect_lane(rgb)
+        left_fit, right_fit, debug = self.detector.update(rgb)
         offset = lateral_offset(left_fit, right_fit)
         heading = heading_error(left_fit, right_fit)
         speed = self.sim.speed()
