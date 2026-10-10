@@ -5,6 +5,7 @@ Folosire:
         rgb = sim.tick()   # avanseaza simularea cu un pas si intoarce imaginea camerei
 """
 
+import math
 import queue
 
 import carla
@@ -48,6 +49,7 @@ class Simulation:
         self._image_queue = queue.Queue()
         self.vehicle = None
         self.camera = None
+        self.max_steer_angle = None  # unghiul maxim al rotilor din fata (rad)
 
         try:
             self._setup(autopilot)
@@ -70,6 +72,8 @@ class Simulation:
         spawn_point = self.world.get_map().get_spawn_points()[SPAWN_INDEX]
         self.vehicle = self.world.spawn_actor(vehicle_bp, spawn_point)
         self._actors.append(self.vehicle)
+        front_wheel = self.vehicle.get_physics_control().wheels[0]
+        self.max_steer_angle = math.radians(front_wheel.max_steer_angle)
         if autopilot:
             self.vehicle.set_autopilot(True, TM_PORT)
             # Pilotul automat ramane pe banda lui, ca sa avem un test curat pentru detectie
@@ -92,6 +96,18 @@ class Simulation:
         while image.frame < frame:  # sarim peste imagini ramase din pasi mai vechi
             image = self._image_queue.get(timeout=2.0)
         return image_to_rgb(image)
+
+    def speed(self):
+        """Viteza masinii in m/s."""
+        velocity = self.vehicle.get_velocity()
+        return math.sqrt(velocity.x ** 2 + velocity.y ** 2 + velocity.z ** 2)
+
+    def apply_control(self, steer_angle, throttle, brake):
+        """Trimite comenzile catre masina; se aplica la urmatorul tick().
+        steer_angle: unghiul dorit al rotilor in rad (pozitiv = dreapta); throttle, brake: 0..1."""
+        # CARLA vrea directia intre -1 si 1, ca fractiune din unghiul maxim al rotilor
+        steer = max(-1.0, min(1.0, steer_angle / self.max_steer_angle))
+        self.vehicle.apply_control(carla.VehicleControl(throttle=throttle, steer=steer, brake=brake))
 
     def close(self):
         """Readuce serverul la setarile initiale si sterge masina si camera."""
