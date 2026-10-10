@@ -1,0 +1,6 @@
+# Mediul virtual Python (se reface cu py -3.12 -m venv venv)
+venv/
+
+# Fisiere generate de Python
+__pycache__/
+*.pyc
