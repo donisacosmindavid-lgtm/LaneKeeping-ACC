@@ -22,6 +22,7 @@ from lane_detection import (BEV_HEIGHT, BEV_WIDTH, BEV_X_NEAR, LaneDetector, hea
                             lane_center_lateral, lane_curvature, lateral_offset)
 from lane_view import compose_view
 from radar import LeadTracker
+from vehicle_detection import VehicleDetector, draw_vehicles
 from simulation import (CAMERA_TRANSFORM, FIXED_DELTA, IMAGE_HEIGHT, IMAGE_WIDTH, RADAR_TRANSFORM,
                         REAR_AXLE_OFFSET, WHEELBASE, Simulation)
 
@@ -169,6 +170,7 @@ def main():
     try:
         with Simulation(autopilot=False, lead_distance=LEAD_START_DISTANCE) as sim:
             keeper = LaneKeeper(sim)
+            vehicle_detector = VehicleDetector()
             running = True
             step = 0
             while running:
@@ -180,6 +182,9 @@ def main():
                 left_fit, right_fit, debug, offset, heading = keeper.step(rgb)
                 canvas = compose_view(rgb, left_fit, right_fit, debug)
                 draw_telemetry(canvas, keeper, heading)
+                # YOLO e doar pentru afisare: imaginea camerei e in stanga, deci
+                # dreptunghiurile se deseneaza direct, la aceleasi coordonate
+                draw_vehicles(canvas, vehicle_detector.detect(rgb))
                 running = window.show(canvas)
     finally:
         window.close()
