@@ -32,6 +32,15 @@ RADAR_HORIZONTAL_FOV = 45       # unghiul de vedere orizontal, in grade; lat, ca
 RADAR_VERTICAL_FOV = 3          # ingust pe verticala, ca sa prinda cat mai putin asfalt
 RADAR_RANGE = 100               # pana la ce distanta vede (m)
 RADAR_POINTS_PER_SECOND = 4500
+# Conditiile de vreme pentru scenariile de test (None = vremea cu care vine harta)
+WEATHER_PRESETS = {
+    "soft_rain": carla.WeatherParameters.SoftRainNoon,
+    "mid_rain": carla.WeatherParameters.MidRainyNoon,
+    "hard_rain": carla.WeatherParameters.HardRainNoon,
+    "night": carla.WeatherParameters.ClearNight,
+}
+# Luminile aprinse noaptea: faza scurta si pozitiile
+HEADLIGHTS = carla.VehicleLightState(carla.VehicleLightState.LowBeam | carla.VehicleLightState.Position)
 
 
 def image_to_rgb(image):
@@ -54,7 +63,7 @@ class Simulation:
     """Masina noastra pe autostrada din Town04, cu camera frontala si radar, in mod sincron.
     Cu lead_distance, pune si o masina in fata, la atatia metri, pe aceeasi banda."""
 
-    def __init__(self, autopilot=True, lead_distance=None):
+    def __init__(self, autopilot=True, lead_distance=None, weather=None):
         self.client = carla.Client(HOST, PORT)
         self.client.set_timeout(120.0)  # incarcarea unei harti poate dura mult
 
@@ -63,6 +72,8 @@ class Simulation:
             self.world = self.client.load_world(MAP_NAME)
 
         self._original_settings = self.world.get_settings()
+        self._original_weather = self.world.get_weather()
+        self._weather = weather                # None sau o cheie din WEATHER_PRESETS
         self._traffic_manager = self.client.get_trafficmanager(TM_PORT)
         self._actors = []
         self._autopilot_vehicles = []          # masinile conduse de pilotul automat al CARLA
@@ -89,6 +100,9 @@ class Simulation:
         self.world.apply_settings(settings)
         self._traffic_manager.set_synchronous_mode(True)
 
+        if self._weather is not None:
+            self.world.set_weather(WEATHER_PRESETS[self._weather])
+
         blueprints = self.world.get_blueprint_library()
         self._map = self.world.get_map()
 
@@ -103,6 +117,8 @@ class Simulation:
         # (viteza in km/h -> fractiune din unghiul cerut); o tinem minte ca s-o compensam
         self._steer_curve_speeds = [point.x for point in physics.steering_curve]
         self._steer_curve_factors = [point.y for point in physics.steering_curve]
+        if self._weather == "night":
+            self.vehicle.set_light_state(HEADLIGHTS)
         if autopilot:
             self.vehicle.set_autopilot(True, TM_PORT)
             self._autopilot_vehicles.append(self.vehicle)
@@ -142,6 +158,8 @@ class Simulation:
         self.lead.set_autopilot(True, TM_PORT)
         self._autopilot_vehicles.append(self.lead)
         self._traffic_manager.auto_lane_change(self.lead, False)
+        if self._weather == "night":
+            self.lead.set_light_state(HEADLIGHTS)
         self.set_lead_speed(0.0)
 
     def set_lead_speed(self, speed):
@@ -164,7 +182,7 @@ class Simulation:
         centers = self.vehicle.get_transform().location.distance(self.lead.get_transform().location)
         gap = centers - self.vehicle.bounding_box.extent.x - self.lead.bounding_box.extent.x
         lead_velocity = self.lead.get_velocity()
-        lead_speed = math.sqrt(lead_velocity.x ** 2 + lead_velocity.y ** 2 + lead_velocity.z ** 2)
+        lead_speed = math.sqrt(lead_velocity.x ** 2 + lead_velocity.y ** 2)
         return gap, lead_speed - self.speed()
 
     def tick(self):
@@ -183,9 +201,10 @@ class Simulation:
         return measurement
 
     def speed(self):
-        """Viteza masinii noastre in m/s."""
+        """Viteza masinii noastre pe sosea, in m/s (fara componenta verticala: la aparitia
+        in simulare masina cade cativa centimetri si ar parea ca se misca)."""
         velocity = self.vehicle.get_velocity()
-        return math.sqrt(velocity.x ** 2 + velocity.y ** 2 + velocity.z ** 2)
+        return math.sqrt(velocity.x ** 2 + velocity.y ** 2)
 
     def apply_control(self, steer_angle, throttle, brake):
         """Trimite comenzile catre masina; se aplica la urmatorul tick().
@@ -211,6 +230,7 @@ class Simulation:
         # Fara asta serverul ramane in mod sincron si ingheata asteptand tick-uri.
         # Ordinea conteaza: intai iesim din modul sincron, abia apoi stergem actorii.
         self.world.apply_settings(self._original_settings)
+        self.world.set_weather(self._original_weather)
         self._traffic_manager.set_synchronous_mode(False)
         for actor in reversed(self._actors):
             if isinstance(actor, carla.Sensor):

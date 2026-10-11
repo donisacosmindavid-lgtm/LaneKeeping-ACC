@@ -218,23 +218,36 @@ def log_metrics(logger, sim, keeper, step, offset, vehicles, latency_ms):
     )
 
 
-def main():
-    arguments = parse_arguments()
+def demo_lead_speed(elapsed):
+    """Viteza masinii din fata in demonstratie: alterneaza intre doua valori, ca sa vedem
+    ACC-ul la lucru. elapsed: timpul de simulare in secunde."""
+    slow = elapsed % (2 * LEAD_PHASE_TIME) >= LEAD_PHASE_TIME
+    return LEAD_SLOW_SPEED if slow else LEAD_FAST_SPEED
+
+
+def run(lead_speed=demo_lead_speed, weather=None, log_path=None, max_steps=None, max_distance=None):
+    """Porneste simularea si conduce masina pana la ESC sau pana la una dintre limite.
+    lead_speed: functie timp (s) -> viteza masinii din fata (m/s); None = fara masina in fata.
+    weather: None (vremea hartii) sau o cheie din simulation.WEATHER_PRESETS.
+    log_path: fisier CSV pentru metrici. max_steps: numar maxim de pasi.
+    max_distance: opreste rularea dupa atatia metri parcursi."""
     window = Window(IMAGE_WIDTH + BEV_WIDTH, IMAGE_HEIGHT, "ADAS - lane keeping si ACC",
                     fps=1.0 / FIXED_DELTA)
-    logger = MetricsLogger(arguments.log) if arguments.log else None
+    logger = MetricsLogger(log_path) if log_path else None
+    lead_distance = LEAD_START_DISTANCE if lead_speed is not None else None
     try:
-        with Simulation(autopilot=False, lead_distance=LEAD_START_DISTANCE) as sim:
+        with Simulation(autopilot=False, lead_distance=lead_distance, weather=weather) as sim:
             keeper = LaneKeeper(sim)
             vehicle_detector = VehicleDetector()
             running = True
             step = 0
+            distance = 0.0
             while running:
-                # Masina din fata alterneaza intre doua viteze, ca sa vedem ACC-ul la lucru
                 step += 1
-                slow = (step * FIXED_DELTA) % (2 * LEAD_PHASE_TIME) >= LEAD_PHASE_TIME
-                sim.set_lead_speed(LEAD_SLOW_SPEED if slow else LEAD_FAST_SPEED)
+                if lead_speed is not None:
+                    sim.set_lead_speed(lead_speed(step * FIXED_DELTA))
                 rgb = sim.tick()
+                distance += sim.speed() * FIXED_DELTA
 
                 # Latenta: cat dureaza tot ce facem cu un cadru, de la imagine la comenzi
                 started = time.perf_counter()
@@ -250,12 +263,19 @@ def main():
                 # dreptunghiurile se deseneaza direct, la aceleasi coordonate
                 draw_vehicles(canvas, vehicles)
                 running = window.show(canvas)
-                if arguments.steps is not None and step >= arguments.steps:
+                if max_steps is not None and step >= max_steps:
+                    running = False
+                if max_distance is not None and distance >= max_distance:
                     running = False
     finally:
         if logger is not None:
             logger.close()
         window.close()
+
+
+def main():
+    arguments = parse_arguments()
+    run(log_path=arguments.log, max_steps=arguments.steps)
 
 
 if __name__ == "__main__":

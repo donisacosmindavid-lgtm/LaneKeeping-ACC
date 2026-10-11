@@ -91,6 +91,7 @@ def summarize(path):
         "cadre": len(lateral),
         "durata (s)": data["time_s"][-1],
         "viteza medie (km/h)": data["speed_kmh"].mean(),
+        "distanta parcursa (m)": data["speed_kmh"].sum() / 3.6 * (data["time_s"][-1] / len(lateral)),
         "banda detectata (% cadre)": 100 * data["lane_detected"].mean(),
         "eroare laterala reala, RMS (m)": np.sqrt(np.mean(lateral ** 2)),
         "eroare laterala reala, maxim (m)": np.abs(lateral).max(),
@@ -100,7 +101,8 @@ def summarize(path):
         f"cadre peste {LATENCY_BUDGET_MS:.0f} ms": int((latency > LATENCY_BUDGET_MS).sum()),
         "masina in fata vazuta de radar (% cadre)": 100 * following.mean(),
     }
-    if following.any():
+    # Cifrele de urmarire au sens doar daca in scenariu chiar exista o masina in fata
+    if not np.all(np.isnan(data["lead_distance_true_m"])) and following.any():
         summary.update({
             "distanta reala minima (m)": np.nanmin(data["lead_distance_true_m"]),
             "eroare de distanta fata de cea dorita, medie (m)": np.nanmean(distance_error[following]),
