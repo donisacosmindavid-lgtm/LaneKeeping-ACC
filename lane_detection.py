@@ -50,7 +50,7 @@ MIN_FIT_PIXELS = 60            # sub atatia pixeli nu avem incredere in linie
 LANE_WIDTH = 3.5               # latimea asteptata a benzii (m)
 LANE_WIDTH_TOLERANCE = 0.7     # cu cat se poate abate latimea masurata ca sa credem detectia (m)
 LEAD_ERASE_HALF_WIDTH = 1.3    # jumatate din latimea zonei sterse in dreptul masinii din fata (m)
-LEAD_ERASE_MARGIN = 1.0        # incepem stergerea cu atat mai aproape decat spune radarul (m)
+LEAD_ERASE_MARGIN = 2.5        # incepem stergerea cu atat mai aproape decat spune radarul (m)
 MAX_FIT_RESIDUAL = 4.0         # abaterea maxima a pixelilor fata de curbele potrivite (pixeli)
 
 
