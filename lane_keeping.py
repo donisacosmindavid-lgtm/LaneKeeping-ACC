@@ -9,10 +9,13 @@ benzii lipseste prea mult timp, masina se opreste. Pilotul automat al CARLA este
 
 Rulare (cu serverul CARLA pornit):
     venv\\Scripts\\python.exe lane_keeping.py
+    venv\\Scripts\\python.exe lane_keeping.py --log results\\test.csv --steps 1200
 Iesire: ESC sau inchiderea ferestrei.
 """
 
+import argparse
 import math
+import time
 
 import cv2
 
@@ -21,6 +24,7 @@ from display import Window
 from lane_detection import (BEV_HEIGHT, BEV_WIDTH, BEV_X_NEAR, LaneDetector, heading_error,
                             lane_center_lateral, lane_curvature, lateral_offset)
 from lane_view import compose_view
+from metrics import MetricsLogger
 from radar import LeadTracker
 from vehicle_detection import VehicleDetector, draw_vehicles
 from simulation import (CAMERA_TRANSFORM, FIXED_DELTA, IMAGE_HEIGHT, IMAGE_WIDTH, RADAR_TRANSFORM,
@@ -164,9 +168,51 @@ def draw_telemetry(canvas, keeper, heading):
         cv2.putText(canvas, line, position, cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
 
+def parse_arguments():
+    """Optiunile din linia de comanda."""
+    parser = argparse.ArgumentParser(description="Lane keeping si ACC in CARLA.")
+    parser.add_argument("--log", metavar="FISIER.csv", help="scrie metricile fiecarui cadru in acest fisier")
+    parser.add_argument("--steps", type=int, metavar="N", help="opreste rularea dupa N pasi de simulare")
+    return parser.parse_args()
+
+
+def log_metrics(logger, sim, keeper, step, offset, vehicles, latency_ms):
+    """Scrie un rand de metrici: ce am masurat noi si, alaturi, adevarul din simulator."""
+    speed = sim.speed()
+    if keeper.lead is None:
+        lead_distance = lead_rel_speed = None
+    else:
+        lead_distance, lead_rel_speed, _ = keeper.lead
+    if sim.lead is None:
+        true_distance = true_rel_speed = None
+    else:
+        true_distance, true_rel_speed = sim.true_lead_gap()
+
+    logger.log(
+        step=step,
+        time_s=step * FIXED_DELTA,
+        speed_kmh=speed * 3.6,
+        target_speed_kmh=keeper.target_speed * 3.6,
+        lane_detected=int(offset is not None),
+        lateral_error_m=offset,
+        lateral_error_true_m=sim.true_lateral_error(),
+        steer_deg=math.degrees(keeper.steer_angle),
+        lead_detected=int(keeper.lead is not None),
+        lead_distance_m=lead_distance,
+        lead_distance_true_m=true_distance,
+        lead_rel_speed_ms=lead_rel_speed,
+        lead_rel_speed_true_ms=true_rel_speed,
+        desired_distance_m=keeper.acc.desired_distance(speed),
+        vehicles_seen=len(vehicles),
+        latency_ms=latency_ms,
+    )
+
+
 def main():
+    arguments = parse_arguments()
     window = Window(IMAGE_WIDTH + BEV_WIDTH, IMAGE_HEIGHT, "ADAS - lane keeping si ACC",
                     fps=1.0 / FIXED_DELTA)
+    logger = MetricsLogger(arguments.log) if arguments.log else None
     try:
         with Simulation(autopilot=False, lead_distance=LEAD_START_DISTANCE) as sim:
             keeper = LaneKeeper(sim)
@@ -179,14 +225,26 @@ def main():
                 slow = (step * FIXED_DELTA) % (2 * LEAD_PHASE_TIME) >= LEAD_PHASE_TIME
                 sim.set_lead_speed(LEAD_SLOW_SPEED if slow else LEAD_FAST_SPEED)
                 rgb = sim.tick()
+
+                # Latenta: cat dureaza tot ce facem cu un cadru, de la imagine la comenzi
+                started = time.perf_counter()
                 left_fit, right_fit, debug, offset, heading = keeper.step(rgb)
+                vehicles = vehicle_detector.detect(rgb)
+                latency_ms = 1000 * (time.perf_counter() - started)
+                if logger is not None:
+                    log_metrics(logger, sim, keeper, step, offset, vehicles, latency_ms)
+
                 canvas = compose_view(rgb, left_fit, right_fit, debug)
                 draw_telemetry(canvas, keeper, heading)
                 # YOLO e doar pentru afisare: imaginea camerei e in stanga, deci
                 # dreptunghiurile se deseneaza direct, la aceleasi coordonate
-                draw_vehicles(canvas, vehicle_detector.detect(rgb))
+                draw_vehicles(canvas, vehicles)
                 running = window.show(canvas)
+                if arguments.steps is not None and step >= arguments.steps:
+                    running = False
     finally:
+        if logger is not None:
+            logger.close()
         window.close()
 
 

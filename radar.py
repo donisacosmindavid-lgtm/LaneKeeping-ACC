@@ -15,6 +15,7 @@ CLUSTER_DEPTH = 2.0          # punctele aceluiasi obiect stau in cel mult atatia
 MIN_CLUSTER_POINTS = 3       # cate puncte trebuie sa aiba un grup ca sa-l credem obiect
 MIN_OBJECT_SPEED = 1.0       # sub aceasta viteza fata de sosea, un obiect e considerat fix (m/s)
 TRACK_GATE = 3.0             # cat de departe de tinta urmarita cautam punctele ei (m)
+MAX_PLAUSIBLE_SPEED = 80.0   # peste aceasta viteza relativa, punctul e o eroare de masura (m/s)
 MAX_COAST_FRAMES = 10        # cate cadre tinem minte tinta dupa ce nu o mai vedem (0.5 s)
 
 
@@ -67,7 +68,10 @@ class LeadTracker:
         else:
             tracked = np.zeros(len(points), dtype=bool)
 
-        candidates = np.flatnonzero(in_lane & above_road & (moving | tracked))
+        # La pornirea simularii radarul da uneori viteze absurde; le ignoram
+        plausible = np.abs(velocity) < MAX_PLAUSIBLE_SPEED
+
+        candidates = np.flatnonzero(in_lane & above_road & plausible & (moving | tracked))
         if len(candidates) < MIN_CLUSTER_POINTS:
             return None
 

@@ -90,10 +90,11 @@ class Simulation:
         self._traffic_manager.set_synchronous_mode(True)
 
         blueprints = self.world.get_blueprint_library()
+        self._map = self.world.get_map()
 
         vehicle_bp = blueprints.find("vehicle.tesla.model3")
         vehicle_bp.set_attribute("role_name", "hero")
-        spawn_point = self.world.get_map().get_spawn_points()[SPAWN_INDEX]
+        spawn_point = self._map.get_spawn_points()[SPAWN_INDEX]
         self.vehicle = self.world.spawn_actor(vehicle_bp, spawn_point)
         self._actors.append(self.vehicle)
         physics = self.vehicle.get_physics_control()
@@ -133,7 +134,7 @@ class Simulation:
     def _spawn_lead(self, blueprints, spawn_point, distance):
         """Pune o masina la `distance` metri in fata punctului de pornire, pe aceeasi banda.
         O conduce pilotul automat al CARLA, cu viteza pe care i-o dam prin set_lead_speed."""
-        start = self.world.get_map().get_waypoint(spawn_point.location)
+        start = self._map.get_waypoint(spawn_point.location)
         transform = start.next(distance)[0].transform
         transform.location.z += 0.3  # putin deasupra soselei, ca sa nu se "infiga" in asfalt
         self.lead = self.world.spawn_actor(blueprints.find("vehicle.audi.tt"), transform)
@@ -146,6 +147,15 @@ class Simulation:
     def set_lead_speed(self, speed):
         """Viteza pe care masina din fata incearca s-o tina, in m/s."""
         self._traffic_manager.set_desired_speed(self.lead, speed * 3.6)
+
+    def true_lateral_error(self):
+        """Adevarul din simulator, pentru validare si metrici (nu pentru reglare):
+        cat de departe e centrul masinii de centrul benzii, in metri (pozitiv = la dreapta)."""
+        location = self.vehicle.get_transform().location
+        waypoint = self._map.get_waypoint(location)  # cel mai apropiat punct de pe centrul benzii
+        center = waypoint.transform.location
+        right = waypoint.transform.get_right_vector()
+        return (location.x - center.x) * right.x + (location.y - center.y) * right.y
 
     def true_lead_gap(self):
         """Adevarul din simulator, pentru validare si metrici (nu pentru reglare):

@@ -4,6 +4,9 @@ venv/
 # Modelele preantrenate (se descarca singure la prima rulare)
 models/
 
+# Rulari de proba ale metricilor
+results/test*.csv
+
 # Fisiere generate de Python
 __pycache__/
 *.pyc
