@@ -1,4 +1,5 @@
-"""Legatura cu simulatorul CARLA: harta, modul sincron, masina si camera frontala.
+"""Legatura cu simulatorul CARLA: harta, modul sincron, masina noastra cu camera
+frontala si radar si, optional, o masina in fata pe aceeasi banda.
 
 Folosire:
     with Simulation() as sim:
@@ -25,6 +26,12 @@ CAMERA_TRANSFORM = carla.Transform(carla.Location(x=1.5, z=2.4))
 # Geometria masinii (Tesla Model 3), citita din simulator
 WHEELBASE = 3.0           # ampatamentul: distanta dintre puntea fata si puntea spate (m)
 REAR_AXLE_OFFSET = 1.39   # cat de in spatele centrului masinii este puntea spate (m)
+# Radarul: montat la bara din fata
+RADAR_TRANSFORM = carla.Transform(carla.Location(x=2.3, z=0.9))
+RADAR_HORIZONTAL_FOV = 30       # unghiul de vedere orizontal, in grade
+RADAR_VERTICAL_FOV = 3          # ingust pe verticala, ca sa prinda cat mai putin asfalt
+RADAR_RANGE = 100               # pana la ce distanta vede (m)
+RADAR_POINTS_PER_SECOND = 3000
 
 
 def image_to_rgb(image):
@@ -35,10 +42,19 @@ def image_to_rgb(image):
     return np.ascontiguousarray(array[:, :, :3][:, :, ::-1])
 
 
-class Simulation:
-    """O masina pe autostrada din Town04, cu camera frontala, in mod sincron."""
+def radar_to_points(measurement):
+    """Transforma masuratoarea radarului intr-o matrice numpy cu cate un rand pe punct detectat:
+    [viteza (m/s, pozitiva = se departeaza), azimut (rad, pozitiv = dreapta),
+     altitudine (rad, pozitiva = in sus), distanta (m)]."""
+    points = np.frombuffer(measurement.raw_data, dtype=np.float32)
+    return points.reshape((-1, 4)).copy()
 
-    def __init__(self, autopilot=True):
+
+class Simulation:
+    """Masina noastra pe autostrada din Town04, cu camera frontala si radar, in mod sincron.
+    Cu lead_distance, pune si o masina in fata, la atatia metri, pe aceeasi banda."""
+
+    def __init__(self, autopilot=True, lead_distance=None):
         self.client = carla.Client(HOST, PORT)
         self.client.set_timeout(120.0)  # incarcarea unei harti poate dura mult
 
@@ -50,17 +66,21 @@ class Simulation:
         self._traffic_manager = self.client.get_trafficmanager(TM_PORT)
         self._actors = []
         self._image_queue = queue.Queue()
+        self._radar_queue = queue.Queue()
         self.vehicle = None
         self.camera = None
-        self.max_steer_angle = None  # unghiul maxim al rotilor din fata (rad)
+        self.radar = None
+        self.lead = None                       # masina din fata, daca exista
+        self.radar_points = np.zeros((0, 4))   # punctele radarului din ultimul pas
+        self.max_steer_angle = None            # unghiul maxim al rotilor din fata (rad)
 
         try:
-            self._setup(autopilot)
+            self._setup(autopilot, lead_distance)
         except Exception:
             self.close()  # nu lasam serverul in mod sincron daca pornirea esueaza la jumatate
             raise
 
-    def _setup(self, autopilot):
+    def _setup(self, autopilot, lead_distance):
         # Mod sincron: serverul calculeaza un pas doar cand ii cerem noi, cu world.tick()
         settings = self.world.get_settings()
         settings.synchronous_mode = True
@@ -93,19 +113,64 @@ class Simulation:
         self.camera = self.world.spawn_actor(camera_bp, CAMERA_TRANSFORM, attach_to=self.vehicle)
         self._actors.append(self.camera)
 
-        # Camera livreaza imaginile pe un fir separat; coada le aduce in bucla principala
+        radar_bp = blueprints.find("sensor.other.radar")
+        radar_bp.set_attribute("horizontal_fov", str(RADAR_HORIZONTAL_FOV))
+        radar_bp.set_attribute("vertical_fov", str(RADAR_VERTICAL_FOV))
+        radar_bp.set_attribute("range", str(RADAR_RANGE))
+        radar_bp.set_attribute("points_per_second", str(RADAR_POINTS_PER_SECOND))
+        self.radar = self.world.spawn_actor(radar_bp, RADAR_TRANSFORM, attach_to=self.vehicle)
+        self._actors.append(self.radar)
+
+        # Senzorii livreaza datele pe fire separate; cozile le aduc in bucla principala
         self.camera.listen(self._image_queue.put)
+        self.radar.listen(self._radar_queue.put)
+
+        if lead_distance is not None:
+            self._spawn_lead(blueprints, spawn_point, lead_distance)
+
+    def _spawn_lead(self, blueprints, spawn_point, distance):
+        """Pune o masina la `distance` metri in fata punctului de pornire, pe aceeasi banda.
+        O conduce pilotul automat al CARLA, cu viteza pe care i-o dam prin set_lead_speed."""
+        start = self.world.get_map().get_waypoint(spawn_point.location)
+        transform = start.next(distance)[0].transform
+        transform.location.z += 0.3  # putin deasupra soselei, ca sa nu se "infiga" in asfalt
+        self.lead = self.world.spawn_actor(blueprints.find("vehicle.audi.tt"), transform)
+        self._actors.append(self.lead)
+        self.lead.set_autopilot(True, TM_PORT)
+        self._traffic_manager.auto_lane_change(self.lead, False)
+        self.set_lead_speed(0.0)
+
+    def set_lead_speed(self, speed):
+        """Viteza pe care masina din fata incearca s-o tina, in m/s."""
+        self._traffic_manager.set_desired_speed(self.lead, speed * 3.6)
+
+    def true_lead_gap(self):
+        """Adevarul din simulator, pentru validare si metrici (nu pentru reglare):
+        (distanta in metri de la bara noastra din fata la bara din spate a masinii din fata,
+         viteza ei minus viteza noastra, in m/s)."""
+        centers = self.vehicle.get_transform().location.distance(self.lead.get_transform().location)
+        gap = centers - self.vehicle.bounding_box.extent.x - self.lead.bounding_box.extent.x
+        lead_velocity = self.lead.get_velocity()
+        lead_speed = math.sqrt(lead_velocity.x ** 2 + lead_velocity.y ** 2 + lead_velocity.z ** 2)
+        return gap, lead_speed - self.speed()
 
     def tick(self):
-        """Avanseaza simularea cu FIXED_DELTA si intoarce imaginea camerei din acel pas (RGB)."""
+        """Avanseaza simularea cu FIXED_DELTA si intoarce imaginea camerei din acel pas (RGB).
+        Punctele radarului din acelasi pas ajung in self.radar_points."""
         frame = self.world.tick()
-        image = self._image_queue.get(timeout=2.0)
-        while image.frame < frame:  # sarim peste imagini ramase din pasi mai vechi
-            image = self._image_queue.get(timeout=2.0)
-        return image_to_rgb(image)
+        self.radar_points = radar_to_points(self._wait_for_frame(self._radar_queue, frame))
+        return image_to_rgb(self._wait_for_frame(self._image_queue, frame))
+
+    @staticmethod
+    def _wait_for_frame(sensor_queue, frame):
+        """Scoate din coada masuratoarea pasului `frame`, sarind peste cele ramase din pasi mai vechi."""
+        measurement = sensor_queue.get(timeout=2.0)
+        while measurement.frame < frame:
+            measurement = sensor_queue.get(timeout=2.0)
+        return measurement
 
     def speed(self):
-        """Viteza masinii in m/s."""
+        """Viteza masinii noastre in m/s."""
         velocity = self.vehicle.get_velocity()
         return math.sqrt(velocity.x ** 2 + velocity.y ** 2 + velocity.z ** 2)
 
@@ -121,8 +186,9 @@ class Simulation:
         self.vehicle.apply_control(carla.VehicleControl(throttle=throttle, steer=steer, brake=brake))
 
     def close(self):
-        """Readuce serverul la setarile initiale si sterge masina si camera."""
-        # Fara asta serverul ramane in mod sincron si ingheata asteptand tick-uri
+        """Readuce serverul la setarile initiale si sterge masinile si senzorii."""
+        # Fara asta serverul ramane in mod sincron si ingheata asteptand tick-uri.
+        # Ordinea conteaza: intai iesim din modul sincron, abia apoi stergem actorii.
         self.world.apply_settings(self._original_settings)
         self._traffic_manager.set_synchronous_mode(False)
         for actor in reversed(self._actors):
