@@ -25,13 +25,14 @@ class LeadTracker:
         self._last_distance = None   # distanta la care era tinta ultima data cand am vazut-o
         self._frames_unseen = 0
 
-    def update(self, points, ego_speed, curvature=0.0):
+    def update(self, points, ego_speed, lane_center):
         """points: matrice cu randuri [viteza, azimut, altitudine, distanta]
         (vezi simulation.radar_to_points). ego_speed: viteza noastra in m/s.
-        curvature: curbura benzii in 1/m, pozitiva = la dreapta; culoarul de cautare urmeaza banda.
+        lane_center: functie care, pentru o distanta in fata radarului (m), spune unde e
+        centrul benzii noastre (m lateral, pozitiv = dreapta); culoarul de cautare o urmeaza.
         Intoarce None sau (distanta in m, viteza relativa in m/s, pozitiva = se departeaza,
         pozitia laterala in m, pozitiva = la dreapta)."""
-        lead = self._find(points, ego_speed, curvature)
+        lead = self._find(points, ego_speed, lane_center)
         if lead is not None:
             self._last_distance = lead[0]
             self._frames_unseen = 0
@@ -41,7 +42,7 @@ class LeadTracker:
                 self._last_distance = None
         return lead
 
-    def _find(self, points, ego_speed, curvature):
+    def _find(self, points, ego_speed, lane_center):
         if len(points) == 0:
             return None
         velocity, azimuth, altitude, depth = points.T
@@ -51,9 +52,8 @@ class LeadTracker:
         lateral = depth * np.cos(altitude) * np.sin(azimuth)   # pozitiv = la dreapta
         height = depth * np.sin(altitude)                      # pozitiv = in sus
 
-        # Intr-o curba, centrul benzii se departeaza lateral cu curbura * distanta^2 / 2
-        lane_center = curvature * forward ** 2 / 2
-        in_lane = np.abs(lateral - lane_center) < CORRIDOR_HALF_WIDTH
+        # Culoarul de cautare urmeaza banda: intr-o curba, centrul ei se departeaza lateral
+        in_lane = np.abs(lateral - lane_center(forward)) < CORRIDOR_HALF_WIDTH
         above_road = (height > MIN_HEIGHT) & (height < MAX_HEIGHT)
 
         # Radarul masoara viteza fata de noi. Un obiect fix "vine" spre noi cu viteza noastra,

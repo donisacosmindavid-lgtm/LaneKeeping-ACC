@@ -28,10 +28,10 @@ WHEELBASE = 3.0           # ampatamentul: distanta dintre puntea fata si puntea 
 REAR_AXLE_OFFSET = 1.39   # cat de in spatele centrului masinii este puntea spate (m)
 # Radarul: montat la bara din fata
 RADAR_TRANSFORM = carla.Transform(carla.Location(x=2.3, z=0.9))
-RADAR_HORIZONTAL_FOV = 30       # unghiul de vedere orizontal, in grade
+RADAR_HORIZONTAL_FOV = 45       # unghiul de vedere orizontal, in grade; lat, ca sa vada si in curbe
 RADAR_VERTICAL_FOV = 3          # ingust pe verticala, ca sa prinda cat mai putin asfalt
 RADAR_RANGE = 100               # pana la ce distanta vede (m)
-RADAR_POINTS_PER_SECOND = 3000
+RADAR_POINTS_PER_SECOND = 4500
 
 
 def image_to_rgb(image):

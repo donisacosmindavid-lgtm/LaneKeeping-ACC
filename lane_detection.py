@@ -350,6 +350,24 @@ def lateral_offset(left_fit, right_fit):
     return (car_x - lane_center) * XM_PER_PIX
 
 
+def lane_center_lateral(left_fit, right_fit, distance):
+    """Unde este centrul benzii la `distance` metri in fata camerei (numar sau matrice numpy):
+    pozitia laterala in metri fata de axa masinii, pozitiva = la dreapta.
+    None daca nu vedem nicio linie. Dincolo de zona privita, curbele sunt prelungite."""
+    y = BEV_HEIGHT - (np.asarray(distance, dtype=float) - BEV_X_NEAR) / YM_PER_PIX
+    half_lane = LANE_WIDTH / 2 / XM_PER_PIX
+
+    if left_fit is not None and right_fit is not None:
+        lane_center = (np.polyval(left_fit, y) + np.polyval(right_fit, y)) / 2
+    elif left_fit is not None:
+        lane_center = np.polyval(left_fit, y) + half_lane
+    elif right_fit is not None:
+        lane_center = np.polyval(right_fit, y) - half_lane
+    else:
+        return None
+    return (lane_center - BEV_WIDTH / 2) * XM_PER_PIX
+
+
 def heading_error(left_fit, right_fit):
     """Unghiul dintre directia benzii si directia masinii, in radiani, masurat in acelasi
     loc ca eroarea laterala. Pozitiv = banda o ia la dreapta fata de masina.

@@ -31,13 +31,38 @@ class StanleyController:
         return heading_error + cross_track_term + feed_forward
 
 
+class AccController:
+    """Adaptive cruise control: bucla exterioara a unei reglari in cascada.
+    Din distanta pana la masina din fata calculeaza ce viteza ar trebui sa avem;
+    viteza aceea devine referinta pentru regulatorul de viteza (bucla interioara)."""
+
+    def __init__(self, time_gap, standstill_distance, gain):
+        self.time_gap = time_gap                        # intervalul de timp pastrat (s)
+        self.standstill_distance = standstill_distance  # distanta pastrata cand stam pe loc (m)
+        self.gain = gain    # cati m/s adaugam sau scadem pentru fiecare metru de eroare (1/s)
+
+    def desired_distance(self, speed):
+        """Distanta pe care vrem s-o pastram la viteza `speed` (m/s): creste cu viteza."""
+        return self.standstill_distance + self.time_gap * speed
+
+    def target_speed(self, distance, relative_speed, speed):
+        """distance: m pana la masina din fata. relative_speed: viteza ei minus a noastra (m/s).
+        speed: viteza noastra (m/s). Intoarce viteza pe care ar trebui s-o avem (m/s)."""
+        lead_speed = speed + relative_speed
+        distance_error = distance - self.desired_distance(speed)  # pozitiva = suntem prea departe
+        # Mergem cu viteza masinii din fata, corectata proportional cu eroarea de distanta
+        return max(0.0, lead_speed + self.gain * distance_error)
+
+
 class SpeedController:
     """Regulator PI de viteza: din eroarea de viteza scoate acceleratie sau frana."""
 
-    def __init__(self, kp, ki, dt):
+    def __init__(self, kp, ki, dt, max_throttle=1.0, max_brake=1.0):
         self.kp = kp
         self.ki = ki
-        self.dt = dt            # perioada de esantionare (s)
+        self.dt = dt                      # perioada de esantionare (s)
+        self.max_throttle = max_throttle  # limitele comenzilor, intre 0 si 1
+        self.max_brake = max_brake
         self._integral = 0.0
 
     def compute(self, target_speed, speed):
@@ -50,5 +75,5 @@ class SpeedController:
 
         command = self.kp * error + self.ki * self._integral
         if command >= 0:
-            return min(command, 1.0), 0.0
-        return 0.0, min(-command, 1.0)
+            return min(command, self.max_throttle), 0.0
+        return 0.0, min(-command, self.max_brake)
