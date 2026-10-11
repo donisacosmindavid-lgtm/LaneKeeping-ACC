@@ -32,6 +32,8 @@ from simulation import (CAMERA_TRANSFORM, FIXED_DELTA, IMAGE_HEIGHT, IMAGE_WIDTH
 
 CRUISE_SPEED = 50 / 3.6       # viteza de croaziera, pe drum drept (m/s)
 STANLEY_GAIN = 3.0            # k din formula Stanley
+MAX_STEER_RATE = math.radians(40)  # cat de repede se poate schimba comanda de volan (rad/s)
+MAX_LATERAL_OFFSET = 1.5      # peste aceasta eroare laterala, detectia e considerata gresita (m)
 SPEED_KP = 0.3                # castigul proportional al regulatorului de viteza
 SPEED_KI = 0.05               # castigul integral
 MAX_THROTTLE = 0.6            # acceleratia maxima ceruta (din 1); 1.0 ar insemna ~6 m/s^2
@@ -82,16 +84,24 @@ class LaneKeeper:
 
         # Camera: banda. Ii spunem unde e masina din fata, ca sa n-o ia drept marcaj.
         left_fit, right_fit, debug = self.detector.update(rgb, self.lead)
-        self.last_fits = (left_fit, right_fit)
         offset = lateral_offset(left_fit, right_fit)
+        if offset is not None and abs(offset) > MAX_LATERAL_OFFSET:
+            # Masina e pe banda ei, deci centrul benzii nu poate fi atat de departe:
+            # detectia a prins liniile altei benzi. O respingem si o luam de la zero.
+            self.detector.reset()
+            left_fit = right_fit = offset = None
+        self.last_fits = (left_fit, right_fit)
         heading = heading_error(left_fit, right_fit)
 
         if offset is not None:
             self.frames_without_detection = 0
             self.update_curvature(lane_curvature(left_fit, right_fit))
             offset_here, heading_here = self.remove_curve_bias(offset, heading)
-            self.steer_angle = self.stanley.compute(offset_here, heading_here, speed,
-                                                    self.curvature_here)
+            wanted = self.stanley.compute(offset_here, heading_here, speed, self.curvature_here)
+            # Volanul nu se poate roti oricat de repede: limitam schimbarea pe pas, ca un
+            # singur cadru cu masuratori proaste sa nu smuceasca directia
+            max_change = MAX_STEER_RATE * FIXED_DELTA
+            self.steer_angle += max(-max_change, min(max_change, wanted - self.steer_angle))
         else:
             # Fara detectie pastram ultima comanda de directie si numaram cadrele
             self.frames_without_detection += 1

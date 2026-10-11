@@ -293,6 +293,10 @@ class LaneDetector:
     def __init__(self):
         self._prior = (None, None)  # curbele (stanga, dreapta) de la cadrul anterior
 
+    def reset(self):
+        """Uita curbele cadrului anterior; la cadrul urmator cautarea porneste din histograma."""
+        self._prior = (None, None)
+
     def update(self, rgb, lead=None):
         """Primeste imaginea camerei si, daca radarul vede o masina in fata, masuratoarea lui
         (distanta, viteza relativa, pozitie laterala). Intoarce (left_fit, right_fit, debug)."""
@@ -312,8 +316,10 @@ class LaneDetector:
         are inaltime, deci apare "intinsa" in sus, de la roti spre marginea de sus a imaginii."""
         # Distanta e masurata de la radar; o aducem la camera, apoi in randuri ale vederii de sus
         distance_from_camera = lead_distance + RADAR_TRANSFORM.location.x - CAMERA_TRANSFORM.location.x
-        distance_from_camera -= LEAD_ERASE_MARGIN
-        first_row = int(BEV_HEIGHT - (distance_from_camera - BEV_X_NEAR) / YM_PER_PIX)
+        # Incepem stergerea putin mai aproape decat spune radarul (partea de jos a masinii
+        # se vede mai aproape), dar latimea zonei o calculam fata de pozitia ei reala
+        erase_from = distance_from_camera - LEAD_ERASE_MARGIN
+        first_row = int(BEV_HEIGHT - (erase_from - BEV_X_NEAR) / YM_PER_PIX)
         first_row = min(first_row, BEV_HEIGHT)
         if first_row <= 0:
             return  # masina e dincolo de zona privita
@@ -323,7 +329,7 @@ class LaneDetector:
         row_distance = BEV_X_NEAR + (BEV_HEIGHT - rows) * YM_PER_PIX
         # Partile inalte ale masinii se vad de-a lungul razelor care pleaca din camera, deci
         # zona stearsa se departeaza si se largeste proportional cu distanta
-        stretch = row_distance / distance_from_camera
+        stretch = np.maximum(row_distance / distance_from_camera, 1.0)
         centers = BEV_WIDTH / 2 + lead_lateral * stretch / XM_PER_PIX
         half_widths = LEAD_ERASE_HALF_WIDTH * stretch / XM_PER_PIX
         columns = np.arange(BEV_WIDTH)
