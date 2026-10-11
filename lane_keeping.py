@@ -19,6 +19,7 @@ from display import Window
 from lane_detection import (BEV_HEIGHT, BEV_WIDTH, BEV_X_NEAR, LaneDetector, heading_error,
                             lane_curvature, lateral_offset)
 from lane_view import compose_view
+from radar import LeadTracker
 from simulation import (CAMERA_TRANSFORM, FIXED_DELTA, IMAGE_HEIGHT, IMAGE_WIDTH, REAR_AXLE_OFFSET,
                         WHEELBASE, Simulation)
 
@@ -41,6 +42,8 @@ class LaneKeeper:
     def __init__(self, sim):
         self.sim = sim
         self.detector = LaneDetector()
+        self.lead_tracker = LeadTracker()
+        self.lead = None                   # masina din fata vazuta de radar, sau None
         self.stanley = StanleyController(STANLEY_GAIN, WHEELBASE)
         self.speed_controller = SpeedController(SPEED_KP, SPEED_KI, FIXED_DELTA)
         self.steer_angle = 0.0             # ultima comanda de directie (rad)
@@ -52,10 +55,15 @@ class LaneKeeper:
     def step(self, rgb):
         """Calculeaza si trimite comenzile pentru imaginea curenta.
         Intoarce (left_fit, right_fit, debug, offset, heading) pentru afisare."""
-        left_fit, right_fit, debug = self.detector.update(rgb)
+        speed = self.sim.speed()
+        # Radarul: masina din fata, ca (distanta, viteza relativa, pozitie laterala),
+        # sau None daca drumul e liber
+        self.lead = self.lead_tracker.update(self.sim.radar_points, speed, self.curvature)
+
+        # Camera: banda. Ii spunem unde e masina din fata, ca sa n-o ia drept marcaj.
+        left_fit, right_fit, debug = self.detector.update(rgb, self.lead)
         offset = lateral_offset(left_fit, right_fit)
         heading = heading_error(left_fit, right_fit)
-        speed = self.sim.speed()
 
         if offset is not None:
             self.frames_without_detection = 0

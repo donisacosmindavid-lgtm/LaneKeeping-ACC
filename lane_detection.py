@@ -21,7 +21,7 @@ import sys
 import cv2
 import numpy as np
 
-from simulation import CAMERA_FOV, CAMERA_TRANSFORM, IMAGE_HEIGHT, IMAGE_WIDTH
+from simulation import CAMERA_FOV, CAMERA_TRANSFORM, IMAGE_HEIGHT, IMAGE_WIDTH, RADAR_TRANSFORM
 
 # --- Etapa 1: filtrarea ---
 ROI_TOP = 330                  # randul de la care incepe drumul; mai sus e cer si peisaj
@@ -49,6 +49,8 @@ MIN_FIT_PIXELS = 60            # sub atatia pixeli nu avem incredere in linie
 # --- Eroarea laterala si verificarea de plauzibilitate ---
 LANE_WIDTH = 3.5               # latimea asteptata a benzii (m)
 LANE_WIDTH_TOLERANCE = 0.7     # cu cat se poate abate latimea masurata ca sa credem detectia (m)
+LEAD_ERASE_HALF_WIDTH = 1.3    # jumatate din latimea zonei sterse in dreptul masinii din fata (m)
+LEAD_ERASE_MARGIN = 1.0        # incepem stergerea cu atat mai aproape decat spune radarul (m)
 MAX_FIT_RESIDUAL = 4.0         # abaterea maxima a pixelilor fata de curbele potrivite (pixeli)
 
 
@@ -291,13 +293,42 @@ class LaneDetector:
     def __init__(self):
         self._prior = (None, None)  # curbele (stanga, dreapta) de la cadrul anterior
 
-    def update(self, rgb):
-        """Primeste imaginea camerei si intoarce (left_fit, right_fit, debug)."""
+    def update(self, rgb, lead=None):
+        """Primeste imaginea camerei si, daca radarul vede o masina in fata, masuratoarea lui
+        (distanta, viteza relativa, pozitie laterala). Intoarce (left_fit, right_fit, debug)."""
         bev_mask = warp_to_bev(threshold_lane_pixels(rgb))
+        if lead is not None:
+            lead_distance, _, lead_lateral = lead
+            self._erase_lead_vehicle(bev_mask, lead_distance, lead_lateral)
         left_fit, right_fit, debug = find_lane_lines(bev_mask, self._prior)
         # Daca detectia a esuat sau a fost respinsa, la cadrul urmator o luam de la zero
         self._prior = (left_fit, right_fit)
         return left_fit, right_fit, debug
+
+    @staticmethod
+    def _erase_lead_vehicle(bev_mask, lead_distance, lead_lateral):
+        """Sterge din masca zona ocupata de masina din fata, ca partile ei luminoase sa nu
+        fie luate drept marcaje. Vederea de sus presupune ca tot ce vede e pe sosea; o masina
+        are inaltime, deci apare "intinsa" in sus, de la roti spre marginea de sus a imaginii."""
+        # Distanta e masurata de la radar; o aducem la camera, apoi in randuri ale vederii de sus
+        distance_from_camera = lead_distance + RADAR_TRANSFORM.location.x - CAMERA_TRANSFORM.location.x
+        distance_from_camera -= LEAD_ERASE_MARGIN
+        first_row = int(BEV_HEIGHT - (distance_from_camera - BEV_X_NEAR) / YM_PER_PIX)
+        first_row = min(first_row, BEV_HEIGHT)
+        if first_row <= 0:
+            return  # masina e dincolo de zona privita
+
+        # Distanta fata de camera a fiecarui rand de deasupra masinii din fata
+        rows = np.arange(first_row)
+        row_distance = BEV_X_NEAR + (BEV_HEIGHT - rows) * YM_PER_PIX
+        # Partile inalte ale masinii se vad de-a lungul razelor care pleaca din camera, deci
+        # zona stearsa se departeaza si se largeste proportional cu distanta
+        stretch = row_distance / distance_from_camera
+        centers = BEV_WIDTH / 2 + lead_lateral * stretch / XM_PER_PIX
+        half_widths = LEAD_ERASE_HALF_WIDTH * stretch / XM_PER_PIX
+        columns = np.arange(BEV_WIDTH)
+        inside = np.abs(columns[None, :] - centers[:, None]) < half_widths[:, None]
+        bev_mask[:first_row][inside] = 0
 
 
 def lateral_offset(left_fit, right_fit):

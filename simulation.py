@@ -65,6 +65,7 @@ class Simulation:
         self._original_settings = self.world.get_settings()
         self._traffic_manager = self.client.get_trafficmanager(TM_PORT)
         self._actors = []
+        self._autopilot_vehicles = []          # masinile conduse de pilotul automat al CARLA
         self._image_queue = queue.Queue()
         self._radar_queue = queue.Queue()
         self.vehicle = None
@@ -103,6 +104,7 @@ class Simulation:
         self._steer_curve_factors = [point.y for point in physics.steering_curve]
         if autopilot:
             self.vehicle.set_autopilot(True, TM_PORT)
+            self._autopilot_vehicles.append(self.vehicle)
             # Pilotul automat ramane pe banda lui, ca sa avem un test curat pentru detectie
             self._traffic_manager.auto_lane_change(self.vehicle, False)
 
@@ -137,6 +139,7 @@ class Simulation:
         self.lead = self.world.spawn_actor(blueprints.find("vehicle.audi.tt"), transform)
         self._actors.append(self.lead)
         self.lead.set_autopilot(True, TM_PORT)
+        self._autopilot_vehicles.append(self.lead)
         self._traffic_manager.auto_lane_change(self.lead, False)
         self.set_lead_speed(0.0)
 
@@ -187,11 +190,21 @@ class Simulation:
 
     def close(self):
         """Readuce serverul la setarile initiale si sterge masinile si senzorii."""
+        # Pilotul automat ruleaza pe alt fir. Ii luam inapoi masinile si lasam simularea sa
+        # faca un pas, ca sa nu mai incerce sa conduca o masina pe care tocmai o stergem.
+        if self._autopilot_vehicles:
+            for vehicle in self._autopilot_vehicles:
+                vehicle.set_autopilot(False, TM_PORT)
+            self._autopilot_vehicles = []
+            self.world.tick()
+
         # Fara asta serverul ramane in mod sincron si ingheata asteptand tick-uri.
         # Ordinea conteaza: intai iesim din modul sincron, abia apoi stergem actorii.
         self.world.apply_settings(self._original_settings)
         self._traffic_manager.set_synchronous_mode(False)
         for actor in reversed(self._actors):
+            if isinstance(actor, carla.Sensor):
+                actor.stop()  # senzorul nu mai trimite date; abia apoi il stergem
             actor.destroy()
         self._actors = []
 

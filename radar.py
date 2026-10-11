@@ -29,7 +29,8 @@ class LeadTracker:
         """points: matrice cu randuri [viteza, azimut, altitudine, distanta]
         (vezi simulation.radar_to_points). ego_speed: viteza noastra in m/s.
         curvature: curbura benzii in 1/m, pozitiva = la dreapta; culoarul de cautare urmeaza banda.
-        Intoarce (distanta in m, viteza relativa in m/s, pozitiva = se departeaza) sau None."""
+        Intoarce None sau (distanta in m, viteza relativa in m/s, pozitiva = se departeaza,
+        pozitia laterala in m, pozitiva = la dreapta)."""
         lead = self._find(points, ego_speed, curvature)
         if lead is not None:
             self._last_distance = lead[0]
@@ -76,5 +77,5 @@ class LeadTracker:
         for distance in distances:
             group = candidates[(distances >= distance) & (distances <= distance + CLUSTER_DEPTH)]
             if len(group) >= MIN_CLUSTER_POINTS:
-                return float(distance), float(np.median(velocity[group]))
+                return float(distance), float(np.median(velocity[group])), float(np.median(lateral[group]))
         return None
