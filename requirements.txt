@@ -1,0 +1,13 @@
+# Python 3.12, in a virtual environment.
+#
+# Two packages are NOT installed from this file:
+#   1. The CARLA client, from the wheel shipped with the simulator:
+#        pip install <CARLA>\PythonAPI\carla\dist\carla-0.9.16-cp312-cp312-win_amd64.whl
+#   2. PyTorch with CUDA support (install it before the packages below):
+#        pip install torch==2.14.1 torchvision==0.29.1 --index-url https://download.pytorch.org/whl/cu126
+#
+# numpy must stay below 2.0 for the CARLA 0.9.16 client.
+numpy==1.26.4
+opencv-python==4.11.0.86
+pygame==2.6.1
+ultralytics==8.4.175
